@@ -1,3 +1,5 @@
+import os.path
+
 import requests
 import csv
 import time
@@ -7,7 +9,12 @@ headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
 }
 
-def fetch_job_ids(url, max_pages=2):
+DIR_PATH = os.path.abspath(os.path.dirname(__file__))
+folder_name = "_Output"
+file_name='all_job_data.csv'
+
+
+def fetch_job_ids(url, max_pages=5):
     try:
         all_job_ids = []
         page = 1
@@ -63,21 +70,21 @@ def fetch_data_for_job_id(job_id, field_names):
 
         if response.status_code == 200:
             soup = BeautifulSoup(response.content, 'html.parser')
-            dt_dd_mapping = {'Job ID': job_id}
+            details_desc_mapping = {'Job ID': job_id}
 
             job_elements = soup.find_all('dl', class_='dlist is-spaced is-fitted t-small')
 
             for job_element in job_elements:
-                dt_elements = job_element.find_all('dt')
-                dd_elements = job_element.find_all('dd')
+                job_attributes = job_element.find_all('dt')
+                job_desc = job_element.find_all('dd')
 
-                for dt, dd in zip(dt_elements, dd_elements):
-                    dt_name = dt.text.strip()
-                    dd_text = dd.text.strip()
-                    dt_dd_mapping[dt_name] = dd_text
-                    field_names.add(dt_name)  # Add new field names to the set
+                for title, data in zip(job_attributes, job_desc):
+                    title_name = title.text.strip()
+                    data_text = data.text.strip()
+                    details_desc_mapping[title_name] = data_text
+                    field_names.add(title_name)  # Add new field names to the set
 
-            return dt_dd_mapping
+            return details_desc_mapping
 
         else:
             print(f"Failed to retrieve data for Job ID: {job_id}. Status code: {response.status_code}")
@@ -108,19 +115,25 @@ if __name__ == '__main__':
         field_names = set()  # Set to store all unique field names
 
         for job_id in job_ids:
-            dt_dd_mapping = fetch_data_for_job_id(job_id, field_names)
-            all_data.append(dt_dd_mapping)
+            details_desc_mapping = fetch_data_for_job_id(job_id, field_names)
+            all_data.append(details_desc_mapping)
 
-        # Update field names set based on all_data
-        field_names.update(field for dt_dd_mapping in all_data for field in dt_dd_mapping.keys())
+        
+        field_names.update(field for details_desc_mapping in all_data for field in details_desc_mapping.keys())
 
-        # Add missing fields with empty values to all_data
-        for dt_dd_mapping in all_data:
+        
+        for details_desc_mapping in all_data:
             for field_name in field_names:
-                if field_name not in dt_dd_mapping:
-                    dt_dd_mapping[field_name] = ''
+                if field_name not in details_desc_mapping:
+                    details_desc_mapping[field_name] = ''
 
+        folder_name = "_Output"
+        path=os.path.join(DIR_PATH,folder_name)
+        try:
+            os.mkdir(path)
+        except OSError as error:
+            print(error)
         csv_filename = "all_job_data.csv"
-        save_to_csv(all_data, csv_filename)
+        save_to_csv(all_data, os.path.join(path,csv_filename))
     else:
         print("No job IDs found.")
