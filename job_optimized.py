@@ -19,7 +19,7 @@ folder_name = "_Output"
 file_name = 'all_job_data.csv'
 
 
-def fetch_job_ids(url, max_pages=468):
+def fetch_job_ids(url, max_pages=2):
     try:
         all_job_ids = []
         page = 1
@@ -84,8 +84,14 @@ def fetch_data_for_job_id(job_id, retries=3, backoff_factor=2):
             response = session.get(url, headers=headers)
 
         if response.status_code == 200:
-            soup = BeautifulSoup(response.content, 'html.parser')
-            details_desc_mapping = {'Job ID': job_id}
+            soup = BeautifulSoup(response.content, 'html.parser', from_encoding='utf-8')
+            details_desc_mapping = {}
+
+            # Extract the job name and add it to the dictionary
+            job_name_element = soup.find('h1', class_='h3')
+            job_name = job_name_element.text.strip() if job_name_element else ''
+            details_desc_mapping['Job ID'] = job_id
+            details_desc_mapping['Job Name'] = job_name
 
             job_elements = soup.find_all('dl', class_='dlist is-spaced is-fitted t-small')
 
@@ -113,19 +119,6 @@ def fetch_data_for_job_id(job_id, retries=3, backoff_factor=2):
         return {}
 
 
-def save_to_csv(all_data, csv_filename):
-    try:
-        with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
-            fieldnames = list(all_data[0].keys())
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(all_data)
-        print(f"Data has been successfully saved to '{csv_filename}'.")
-
-    except Exception as e:
-        print(f"Error occurred while saving to CSV: {str(e)}")
-
-
 async def main():
     url = 'https://www.bayt.com/en/saudi-arabia/jobs/'
     job_ids = fetch_job_ids(url)
@@ -140,7 +133,7 @@ async def main():
 
             for result in await asyncio.gather(*futures):
                 all_data.append(result)
-                field_names.update(result.keys())  # Update field names set
+                field_names.update(result.keys())  # Update field names set with each job data's keys
 
         # Add missing fields with empty values to all_data
         for details_desc_mapping in all_data:
@@ -156,7 +149,19 @@ async def main():
             print(error)
 
         csv_filename = "all_job_data.csv"
-        save_to_csv(all_data, os.path.join(path, csv_filename))
+        csv_path = os.path.join(path, csv_filename)
+
+        # Save to CSV
+        try:
+            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                field_names = ['Job ID', 'Job Name'] + sorted(field_names - {'Job ID', 'Job Name'})
+                writer = csv.DictWriter(csvfile, fieldnames=field_names)
+                writer.writeheader()
+                writer.writerows(all_data)
+            print(f"Data has been successfully saved to '{csv_path}'.")
+        except Exception as e:
+            print(f"Error occurred while saving to CSV: {str(e)}")
+
     else:
         print("No job IDs found.")
 
