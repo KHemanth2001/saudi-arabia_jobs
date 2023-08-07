@@ -53,6 +53,7 @@ def fetch_job_ids(url):
                     if job_id:
                         all_job_ids.append(job_id)
 
+                print(f"Fetched job IDs from Page {page}")
                 page += 1
                 prev_page_content = current_page_content
                 time.sleep(1)  # Add a delay to avoid overloading the website
@@ -83,7 +84,7 @@ def save_job_ids_to_csv(job_ids):
         print(f"Error occurred while saving to CSV: {str(e)}")
 
 if __name__ == "__main__":
-    url = 'https://www.bayt.com/en/saudi-arabia/jobs/'  # Replace this with the actual URL of the job listing website
+    url = 'https://www.example.com/joblistings'  # Replace this with the actual URL of the job listing website
 
     job_ids = fetch_job_ids(url)
     if job_ids:
