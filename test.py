@@ -3,8 +3,6 @@ import csv
 import time
 import datetime
 import requests
-import aiohttp
-import asyncio
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -18,15 +16,15 @@ folder_name = "_Output"
 file_name = 'all_job_data.csv'
 
 
-# Function: goto_next_page
-def goto_next_page(url, page, sort_option=None):
+# Function: fetch_job_ids
+def fetch_job_ids(url, sort_option=None):
     try:
-        session = requests.Session()
         retry_strategy = Retry(
             total=5,
             backoff_factor=1,  # Increase the delay to 1 second
             status_forcelist=[429, 500, 502, 503, 504],  # Include 429 error in retry list
         )
+        session = requests.Session()
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("http://", adapter)
         session.mount("https://", adapter)
@@ -34,26 +32,10 @@ def goto_next_page(url, page, sort_option=None):
         if sort_option:
             url += f'?sort={sort_option}'
 
-        response = session.get(url + f'&page={page}', headers=headers)
-
+        response = session.get(url)
         response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
 
-        return response.content
-
-    except requests.RequestException as e:
-        print(f"Error occurred while fetching data from {url} (Page: {page}). {str(e)}")
-        return None
-
-    except Exception as e:
-        print(f"Unexpected error occurred while fetching data from {url} (Page: {page}). {str(e)}")
-        return None
-
-
-# Function: fetch_job_ids (Modified for asynchronous requests)
-async def fetch_job_ids_async(url, page, sort_option=None):
-    response = goto_next_page(url, page, sort_option)
-    if response is not None:
-        soup = BeautifulSoup(response, 'html.parser')
+        soup = BeautifulSoup(response.text, 'html.parser')
         job_elements = soup.find_all('li', class_='has-pointer-d')
         job_ids = [job_element.get("data-job-id") for job_element in job_elements if job_element.get("data-job-id")]
         job_dates = [job_element.find('time', class_='has-no-wrap').get('datetime') if job_element.find('time', class_='has-no-wrap') else None for job_element in job_elements]
@@ -69,54 +51,43 @@ async def fetch_job_ids_async(url, page, sort_option=None):
         date_threshold = current_date - datetime.timedelta(days=7)
         recent_job_ids = [job_id for job_id, job_date in job_ids_dates if datetime.datetime.strptime(job_date, "%Y-%m-%d") >= date_threshold]
 
-        print(f"Job IDs fetched from Page {page}")
+        print(f"Job IDs fetched from Page 1")
         return recent_job_ids
-    else:
-        print(f"Failed to fetch data from the next page (Page: {page}).")
+
+    except requests.RequestException as e:
+        print(f"Error occurred while fetching job IDs. {str(e)}")
         return []
 
 
-async def fetch_all_job_ids(url, sort_option=None):
-    page = 1
-    all_job_ids = []
-
-    while True:
-        job_ids = await fetch_job_ids_async(url, page, sort_option)
-        if not job_ids:
-            break
-        all_job_ids.extend(job_ids)
-        page += 1
-        await asyncio.sleep(3)  # Add a delay of 3 seconds between page requests
-    return all_job_ids
+def fetch_all_job_ids(url, sort_option=None):
+    return fetch_job_ids(url, sort_option)
 
 
 # Function: fetch_data_for_job_id
-async def fetch_data_for_job_id(job_id, field_names, session):
+def fetch_data_for_job_id(job_id, field_names):
     try:
         url = f'https://www.bayt.com/en/job/{job_id}/'
-        async with session.get(url, headers=headers) as response:
-            if response.status == 200:
-                soup = BeautifulSoup(await response.content.read(), 'html.parser')
-                details_desc_mapping = {'Job ID': job_id}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
 
-                job_elements = soup.find_all('dl', class_='dlist is-spaced is-fitted t-small')
+        soup = BeautifulSoup(response.text, 'html.parser')
+        details_desc_mapping = {'Job ID': job_id}
 
-                for job_element in job_elements:
-                    job_attributes = job_element.find_all('dt')
-                    job_desc = job_element.find_all('dd')
+        job_elements = soup.find_all('dl', class_='dlist is-spaced is-fitted t-small')
 
-                    for title, data in zip(job_attributes, job_desc):
-                        title_name = title.text.strip()
-                        data_text = data.text.strip()
-                        details_desc_mapping[title_name] = data_text
-                        field_names.add(title_name)  # Add new field names to the set
+        for job_element in job_elements:
+            job_attributes = job_element.find_all('dt')
+            job_desc = job_element.find_all('dd')
 
-                return details_desc_mapping
+            for title, data in zip(job_attributes, job_desc):
+                title_name = title.text.strip()
+                data_text = data.text.strip()
+                details_desc_mapping[title_name] = data_text
+                field_names.add(title_name)  # Add new field names to the set
 
-            else:
-                print(f"Failed to retrieve data for Job ID: {job_id}. Status code: {response.status}")
-                return {}
-    except Exception as e:
+        return details_desc_mapping
+
+    except requests.RequestException as e:
         print(f"Error occurred while fetching data for Job ID: {job_id}. {str(e)}")
         return {}
 
@@ -138,31 +109,38 @@ def save_to_csv(all_data, csv_filename):
 
 
 # Main function
-async def main():
+def main():
     url = 'https://www.bayt.com/en/saudi-arabia/jobs/'
     sort_option = 'date'  # Replace 'date' with the desired sorting option (e.g., 'date', 'relevance', 'expiry')
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        job_ids = await fetch_all_job_ids(url, sort_option)
+    job_ids = fetch_all_job_ids(url, sort_option)
 
-        if job_ids:
-            all_data = []
-            field_names = set()  # Set to store all unique field names
+    if job_ids:
+        all_data = []
+        field_names = set()  # Set to store all unique field names
 
-            tasks = [fetch_data_for_job_id(job_id, field_names, session) for job_id in job_ids]
-            all_data = await asyncio.gather(*tasks)
+        for job_id in job_ids:
+            details_desc_mapping = fetch_data_for_job_id(job_id, field_names)
+            all_data.append(details_desc_mapping)
 
-            folder_name = "_Output"
-            path = os.path.join(DIR_PATH, folder_name)
-            try:
-                os.mkdir(path)
-            except OSError as error:
-                print(error)
-            csv_filename = "all_job_data.csv"
-            save_to_csv(all_data, os.path.join(path, csv_filename))
-        else:
-            print("No job IDs found.")
+        field_names.update(field for details_desc_mapping in all_data for field in details_desc_mapping.keys())
+
+        for details_desc_mapping in all_data:
+            for field_name in field_names:
+                if field_name not in details_desc_mapping:
+                    details_desc_mapping[field_name] = ''
+
+        folder_name = "_Output"
+        path = os.path.join(DIR_PATH, folder_name)
+        try:
+            os.mkdir(path)
+        except OSError as error:
+            print(error)
+        csv_filename = "all_job_data.csv"
+        save_to_csv(all_data, os.path.join(path, csv_filename))
+    else:
+        print("No job IDs found.")
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()
