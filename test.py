@@ -42,11 +42,11 @@ def goto_next_page(url, page, sort_option=None):
 
     except requests.RequestException as e:
         print(f"Error occurred while fetching data from {url} (Page: {page}). {str(e)}")
-        raise e
+        return None
 
     except Exception as e:
         print(f"Unexpected error occurred while fetching data from {url} (Page: {page}). {str(e)}")
-        raise e
+        return None
 
 
 # Function: fetch_job_ids (Modified for asynchronous requests)
@@ -56,24 +56,30 @@ async def fetch_job_ids_async(url, page, sort_option=None):
         soup = BeautifulSoup(response, 'html.parser')
         job_elements = soup.find_all('li', class_='has-pointer-d')
         job_ids = [job_element.get("data-job-id") for job_element in job_elements if job_element.get("data-job-id")]
-        job_dates = [job_element.find('time', class_='has-no-wrap').get('datetime') for job_element in job_elements]
-        job_dates = [datetime.datetime.strptime(date_str, "%Y-%m-%d") for date_str in job_dates]
+        job_dates = [job_element.find('time', class_='has-no-wrap').get('datetime') if job_element.find('time', class_='has-no-wrap') else None for job_element in job_elements]
+
+        # Filter out None values (where job posting date is not found)
+        job_ids_dates = zip(job_ids, job_dates)
+        job_ids_dates = [(job_id, job_date) for job_id, job_date in job_ids_dates if job_date]
 
         # Get the current date
         current_date = datetime.datetime.now()
 
         # Fetch only the job IDs that were posted within the past 7 days
-        recent_job_ids = [job_id for job_id, job_date in zip(job_ids, job_dates) if (current_date - job_date).days <= 7]
+        date_threshold = current_date - datetime.timedelta(days=7)
+        recent_job_ids = [job_id for job_id, job_date in job_ids_dates if datetime.datetime.strptime(job_date, "%Y-%m-%d") >= date_threshold]
 
         print(f"Job IDs fetched from Page {page}")
         return recent_job_ids
     else:
         print(f"Failed to fetch data from the next page (Page: {page}).")
+        return []
 
 
 async def fetch_all_job_ids(url, sort_option=None):
     page = 1
     all_job_ids = []
+
     while True:
         job_ids = await fetch_job_ids_async(url, page, sort_option)
         if not job_ids:
@@ -115,14 +121,16 @@ async def fetch_data_for_job_id(job_id, field_names, session):
         return {}
 
 
-# Function: save_to_csv
+# Function: save_to_csv (Updated to handle new columns)
 def save_to_csv(all_data, csv_filename):
     try:
         with open(csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = list(all_data[0].keys())
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(all_data)
+            for data in all_data:
+                row_data = {field: data.get(field, '') for field in fieldnames}
+                writer.writerow(row_data)
         print(f"Data has been successfully saved to '{csv_filename}'.")
 
     except Exception as e:
@@ -132,38 +140,28 @@ def save_to_csv(all_data, csv_filename):
 # Main function
 async def main():
     url = 'https://www.bayt.com/en/saudi-arabia/jobs/'
-    sort_option = 'date'  # Replace 'date' with the desired sorting criteria, e.g., 'relevance', 'salary', etc.
-    job_ids = await fetch_all_job_ids(url, sort_option)
+    sort_option = 'date'  # Replace 'date' with the desired sorting option (e.g., 'date', 'relevance', 'expiry')
 
-    if job_ids:
-        all_data = []
-        field_names = set()  # Set to store all unique field names
+    async with aiohttp.ClientSession(headers=headers) as session:
+        job_ids = await fetch_all_job_ids(url, sort_option)
 
-        async with aiohttp.ClientSession(headers=headers) as session:
+        if job_ids:
+            all_data = []
+            field_names = set()  # Set to store all unique field names
+
             tasks = [fetch_data_for_job_id(job_id, field_names, session) for job_id in job_ids]
-            details_desc_mappings = await asyncio.gather(*tasks)
+            all_data = await asyncio.gather(*tasks)
 
-        for details_desc_mapping in details_desc_mappings:
-            if details_desc_mapping:
-                all_data.append(details_desc_mapping)
-
-        field_names.update(field for details_desc_mapping in all_data for field in details_desc_mapping.keys())
-
-        for details_desc_mapping in all_data:
-            for field_name in field_names:
-                if field_name not in details_desc_mapping:
-                    details_desc_mapping[field_name] = ''
-
-        folder_name = "_Output"
-        path = os.path.join(DIR_PATH, folder_name)
-        try:
-            os.mkdir(path)
-        except OSError as error:
-            print(error)
-        csv_filename = "all_job_data.csv"
-        save_to_csv(all_data, os.path.join(path, csv_filename))
-    else:
-        print("No job IDs found.")
+            folder_name = "_Output"
+            path = os.path.join(DIR_PATH, folder_name)
+            try:
+                os.mkdir(path)
+            except OSError as error:
+                print(error)
+            csv_filename = "all_job_data.csv"
+            save_to_csv(all_data, os.path.join(path, csv_filename))
+        else:
+            print("No job IDs found.")
 
 
 if __name__ == '__main__':
