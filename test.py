@@ -3,6 +3,9 @@ import requests
 import csv
 import time
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
+from random import uniform
 
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'
@@ -10,30 +13,15 @@ headers = {
 
 DIR_PATH = os.path.abspath(os.path.dirname(__file__))
 folder_name = "_Output"
-file_name = 'all_job_data.csv'
-
-def goto_next_page(url, page):
-    try:
-        response = requests.get(url + f'?page={page}', headers=headers, timeout=30)
-        if response.status_code == 200:
-            return response.content
-        print(f"Failed to retrieve data from {url} (Page: {page}). Status code: {response.status_code}")
-        return None
-    except requests.Timeout:
-        print(f"Request timed out while fetching data from {url} (Page: {page}).")
-        return None
-    except Exception as e:
-        print(f"Error occurred while fetching data from {url} (Page: {page}). {str(e)}")
-        return None
-
+file_name = 'all_job_data_new.csv'
 def fetch_job_ids(url):
     try:
-        all_job_ids = []
+        all_job_ids = set()
         page = 1
         prev_page_content = None
 
         while True:
-            response = goto_next_page(url, page)
+            response, last_page_reached = goto_next_page(url, page, last_page_content=prev_page_content)
 
             if response is not None:
                 soup = BeautifulSoup(response, 'html.parser')
@@ -42,50 +30,150 @@ def fetch_job_ids(url):
                     print("No job IDs found.")
                     break  # No more job IDs to fetch
 
-                # Check if the current page content is the same as the previous page
-                current_page_content = str(response)
-                if current_page_content == prev_page_content:
-                    print("Reached the last page of job listings.")
-                    break
+                job_ids = {job_element.get("data-job-id") for job_element in job_elements}
+                all_job_ids.update(job_ids)
 
-                for job_element in job_elements:
-                    job_id = job_element.get("data-job-id")
-                    if job_id:
-                        all_job_ids.append(job_id)
+                print(f"Data extracted from page {page}")  # Statement to be executed after extracting data
+                if last_page_reached:
+                    break  # Break the loop if the last page is reached
 
-                print(f"Fetched job IDs from Page {page}")
+                prev_page_content = response
                 page += 1
-                prev_page_content = current_page_content
-                time.sleep(1)  # Add a delay to avoid overloading the website
+                time.sleep(uniform(1, 2))  # Add a random delay (1-2 seconds) to avoid overloading the website
             else:
-                print(f"Failed to fetch data from the next page. Exiting the loop.")
+                print(f"Failed to fetch data from page {page}. Exiting the loop.")
                 break
 
-        return all_job_ids
+        return list(all_job_ids)
+
     except Exception as e:
         print(f"Error occurred: {str(e)}")
         return []
-
-def save_job_ids_to_csv(job_ids):
+def goto_next_page(url, page, retries=3, backoff_factor=2, last_page_content=None):
     try:
-        output_folder_path = os.path.join(DIR_PATH, folder_name)
-        os.makedirs(output_folder_path, exist_ok=True)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+        response = requests.get(url + f'?page={page}', headers=headers, timeout=30)  # Increase timeout to 30 seconds
 
-        output_file_path = os.path.join(output_folder_path, file_name)
+        if response.status_code == 200:
+            content = response.content
+            if content == last_page_content:
+                print(f"Reached the last page. Stopping data fetching.")
+                return None, True  # Return None and True to indicate the last page
+            return content, False
+        elif response.status_code == 502:
+            print(f"Bad Gateway error (502) occurred while fetching data from {url} (Page: {page}). Retrying...")
+            time.sleep(uniform(1, 2))  # Add a random delay (1-2 seconds) before retrying
+            return goto_next_page(url, page, retries - 1, backoff_factor * 2, last_page_content)
+        elif response.status_code == 429 and retries > 0:
+            retry_after = int(response.headers.get('Retry-After', 5))
+            print(f"Rate limited. Retrying after {retry_after} seconds...")
+            time.sleep(retry_after)
+            return goto_next_page(url, page, retries - 1, backoff_factor * 2, last_page_content)
+        elif response.status_code == 404:
+            print(f"Reached the last page. Stopping data fetching.")
+            return None, True  # Return None and True to indicate the last page
 
-        with open(output_file_path, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            writer.writerow(['Job ID'])
-            for job_id in job_ids:
-                writer.writerow([job_id])
+        print(f"Failed to retrieve data from {url} (Page: {page}). Status code: {response.status_code}")
+        return None, False
 
-        print(f"Job IDs saved to: {output_file_path}")
+    except requests.Timeout:
+        print(f"Request timed out while fetching data from {url} (Page: {page}). Retrying...")
+        time.sleep(uniform(1, 2))  # Add a random delay (1-2 seconds) before retrying
+        return goto_next_page(url, page, retries - 1, backoff_factor * 2, last_page_content)
+
     except Exception as e:
-        print(f"Error occurred while saving to CSV: {str(e)}")
+        print(f"Error occurred while fetching data from {url} (Page: {page}). {str(e)}")
+        return None, False
+def fetch_data_for_job_id(job_id, retries=3, backoff_factor=2):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3'}
+        url = f'https://www.bayt.com/en/job/{job_id}/'
+        with requests.Session() as session:
+            response = session.get(url, headers=headers)
 
-if __name__ == "__main__":
-    url = 'https://www.example.com/joblistings'  # Replace this with the actual URL of the job listing website
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, 'html.parser', from_encoding='utf-8')
+            details_desc_mapping = {}
 
+            # Extract the job name and add it to the dictionary
+            job_name_element = soup.find('h1', class_='h3')
+            job_name = job_name_element.text.strip() if job_name_element else ''
+            details_desc_mapping['Job ID'] = job_id
+            details_desc_mapping['Job Name'] = job_name
+
+            job_elements = soup.find_all('dl', class_='dlist is-spaced is-fitted t-small')
+
+            for job_element in job_elements:
+                job_attributes = job_element.find_all('dt')
+                job_desc = job_element.find_all('dd')
+
+                for title, data in zip(job_attributes, job_desc):
+                    title_name = title.text.strip()
+                    data_text = data.text.strip()
+                    details_desc_mapping[title_name] = data_text
+
+            return details_desc_mapping
+        elif response.status_code == 429 and retries > 0:
+            retry_after = int(response.headers.get('Retry-After', 5))
+            print(f"Rate limited. Retrying after {retry_after} seconds...")
+            time.sleep(retry_after)
+            return fetch_data_for_job_id(job_id, retries - 1, backoff_factor * 2)
+
+        print(f"Failed to retrieve data for Job ID: {job_id}. Status code: {response.status_code}")
+        return {}
+
+    except Exception as e:
+        print(f"Error occurred while fetching data for Job ID: {job_id}. {str(e)}")
+        return {}
+
+
+def is_same_page_content(current_page_content, prev_page_content):
+    return current_page_content == prev_page_content
+
+async def main():
+    url = 'https://www.bayt.com/en/saudi-arabia/jobs/'
     job_ids = fetch_job_ids(url)
+
     if job_ids:
-        save_job_ids_to_csv(job_ids)
+        all_data = []
+        field_names = set()  # Set to store all unique field names
+        prev_page_content = None  # Initialize the previous page content
+
+        with ThreadPoolExecutor() as executor:
+            loop = asyncio.get_event_loop()
+            futures = [loop.run_in_executor(executor, fetch_data_for_job_id, job_id) for job_id in job_ids]
+
+            for result in await asyncio.gather(*futures):
+                all_data.append(result)
+                field_names.update(result.keys())  # Update field names set with each job data's keys
+
+        # Add missing fields with empty values to all_data
+        for details_desc_mapping in all_data:
+            for field_name in field_names:
+                if field_name not in details_desc_mapping:
+                    details_desc_mapping[field_name] = ''
+
+        path = os.path.join(DIR_PATH, folder_name)
+        try:
+            os.mkdir(path)
+        except OSError as error:
+            print(error)
+
+        csv_path = os.path.join(path, file_name)
+
+        # Save to CSV
+        try:
+            with open(csv_path, 'w', newline='', encoding='utf-8-sig') as csvfile:
+                field_names = ['Job ID', 'Job Name'] + sorted(field_names - {'Job ID', 'Job Name'})
+                writer = csv.DictWriter(csvfile, fieldnames=field_names)
+                writer.writeheader()
+                writer.writerows(all_data)
+            print(f"Data has been successfully saved to '{csv_path}'.")
+        except Exception as e:
+            print(f"Error occurred while saving to CSV: {str(e)}")
+
+    else:
+        print("No job IDs found.")
+
+if __name__ == '__main__':
+    asyncio.run(main())
